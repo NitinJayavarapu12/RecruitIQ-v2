@@ -1,0 +1,43 @@
+# Python virtual environment
+backend/venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Node modules
+frontend/node_modules/
+
+# Environment variables
+.env
+*.env
+
+# Mac system files
+.DS_Store
+
+# Temp files
+*.tmp
+*.log
+
+# Resume cache folders (auto-generated, no need to track)
+**/.ocr_cache/
+**/.llama_cache/
+
+# Filtered resume output folders
+**/filtered/
+
+# Resume/document folders (actual candidate files — never commit)
+Teamcenter Developer/
+Accountant/
+**/filtered/
+*.pdf
+*.docx
+*.doc
+
+# Temp Word lock files
+~$*
+
+# JD files (local only)
+JD*.docx
+JD*.pdf
