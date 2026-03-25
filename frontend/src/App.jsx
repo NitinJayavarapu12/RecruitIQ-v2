@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import JDUploader from "./components/JDUploader";
+import ResumeUploader from "./components/ResumeUploader";
 import ConfigInputs from "./components/ConfigInputs";
 import JDReviewPanel from "./components/JDReviewPanel";
 import ProgressPanel from "./components/ProgressPanel";
@@ -13,9 +14,9 @@ import {
 
 export default function App() {
   // Step 1 state
-  const [jdFile, setJdFile]       = useState(null);
-  const [folderPath, setFolderPath] = useState("");
-  const [topN, setTopN]           = useState(25);
+  const [jdFile, setJdFile]         = useState(null);
+  const [resumeFiles, setResumeFiles] = useState([]);
+  const [topN, setTopN]             = useState(25);
 
   // Step 2 state
   const [jdRequirements, setJdRequirements] = useState(null);
@@ -36,7 +37,7 @@ export default function App() {
 
   // ── Step 1 → 2: Analyze JD ──────────────────────────────────────────────
   const handleAnalyzeJD = async () => {
-    if (!jdFile || !folderPath.trim()) return;
+    if (!jdFile || resumeFiles.length === 0) return;
     setIsAnalyzing(true);
     setErrorMsg("");
     try {
@@ -78,7 +79,7 @@ export default function App() {
 
     try {
       const { job_id } = await startScreening(
-        jdFile, folderPath, topN, primarySkills, secondarySkills, jdText
+        jdFile, resumeFiles, topN, primarySkills, secondarySkills, jdText
       );
       setJobId(job_id);
 
@@ -105,7 +106,7 @@ export default function App() {
     esRef.current?.close();
     setStep(1);
     setJdFile(null);
-    setFolderPath("");
+    setResumeFiles([]);
     setTopN(25);
     setJdRequirements(null);
     setPrimarySkills([]);
@@ -117,6 +118,17 @@ export default function App() {
   };
 
   const results = jobState?.results ?? [];
+  const isScreeningActive = step === 3;
+
+  const canNavigateTo = (s) => {
+    if (isScreeningActive) return false;
+    if (s === step) return false;
+    if (s === 1) return true;
+    if (s === 2) return !!jdRequirements;
+    if (s === 3) return false; // only reached automatically
+    if (s === 4) return jobState?.status === "complete";
+    return false;
+  };
 
   return (
     <div className="min-h-screen bg-cream font-body">
@@ -138,16 +150,47 @@ export default function App() {
           </div>
 
           {/* Step indicator */}
-          <div className="flex items-center gap-2">
-            {[1, 2, 3, 4].map((s) => (
-              <div key={s} className="flex items-center gap-1">
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all
-                  ${s === step ? "bg-blue text-white" : s < step ? "bg-blue/20 text-blue" : "bg-parchment text-muted"}`}>
-                  {s < step ? "✓" : s}
+          <div className="flex items-center gap-1">
+            {[
+              [1, "Upload"],
+              [2, "Review"],
+              [3, "Screening"],
+              [4, "Results"],
+            ].map(([s, label]) => {
+              const navigable = canNavigateTo(s);
+              const active = s === step;
+              const done = s < step;
+              return (
+                <div key={s} className="flex items-center gap-1">
+                  <button
+                    onClick={() => navigable && setStep(s)}
+                    disabled={!navigable}
+                    className={`flex flex-col items-center gap-1 px-2 py-1 rounded-lg transition-all
+                      ${navigable ? "cursor-pointer hover:bg-parchment" : "cursor-default"}`}
+                  >
+                    <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all
+                      ${active
+                        ? "bg-blue text-white"
+                        : done && !isScreeningActive
+                          ? "bg-blue/20 text-blue"
+                          : isScreeningActive
+                            ? "bg-parchment text-muted opacity-40"
+                            : navigable
+                              ? "bg-parchment text-blue border border-blue/30"
+                              : "bg-parchment text-muted"}`}>
+                      {done && !isScreeningActive ? "✓" : s}
+                    </div>
+                    <span className={`text-[10px] font-medium leading-none
+                      ${active ? "text-blue" : isScreeningActive ? "text-muted opacity-40" : navigable ? "text-ink" : "text-muted"}`}>
+                      {label}
+                    </span>
+                  </button>
+                  {s < 4 && (
+                    <div className={`w-6 h-px mb-4 ${done && !isScreeningActive ? "bg-blue/40" : "bg-border"}`} />
+                  )}
                 </div>
-                {s < 4 && <div className={`w-6 h-px ${s < step ? "bg-blue/40" : "bg-border"}`} />}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </header>
@@ -168,14 +211,11 @@ export default function App() {
               </div>
 
               <div className="bg-white rounded-xl border border-border shadow-card p-5 space-y-5">
-                <JDUploader file={jdFile} onChange={setJdFile} />
+                <JDUploader file={jdFile} onChange={(f) => { setJdFile(f); }} />
                 <div className="border-t border-border" />
-                <ConfigInputs
-                  folderPath={folderPath}
-                  onFolderChange={setFolderPath}
-                  topN={topN}
-                  onTopNChange={setTopN}
-                />
+                <ResumeUploader files={resumeFiles} onChange={setResumeFiles} />
+                <div className="border-t border-border" />
+                <ConfigInputs topN={topN} onTopNChange={setTopN} />
 
                 {errorMsg && (
                   <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-red-600 text-xs">
@@ -185,9 +225,9 @@ export default function App() {
 
                 <button
                   onClick={handleAnalyzeJD}
-                  disabled={!jdFile || !folderPath.trim() || isAnalyzing}
+                  disabled={!jdFile || resumeFiles.length === 0 || isAnalyzing}
                   className={`w-full py-2.5 rounded-lg font-semibold text-sm transition-all
-                    ${jdFile && folderPath.trim() && !isAnalyzing
+                    ${jdFile && resumeFiles.length > 0 && !isAnalyzing
                       ? "bg-blue text-white hover:bg-blue/90 shadow-sm cursor-pointer"
                       : "bg-parchment text-muted cursor-not-allowed border border-border opacity-60"}`}
                 >
@@ -296,7 +336,6 @@ export default function App() {
             <ResultsPanel
               results={results}
               jobId={jobId}
-              filteredFolder={jobState?.filtered_folder}
               onReset={handleReset}
             />
           </div>

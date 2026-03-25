@@ -18,14 +18,16 @@ from services.jd_analyzer import analyze_jd
 from services.resume_parser import get_pdf_files, parse_single_resume
 from services.keyword_matcher import keyword_match
 from services.claude_reranker import claude_rerank
-from services.file_manager import copy_filtered_resumes
+from services.file_manager import create_filtered_zip
 from services.excel_exporter import export_to_excel
 
 app = FastAPI(title="RecruitIQ API", version="2.0.0")
 
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -46,7 +48,7 @@ def init_job() -> Dict:
         "current_file": "",
         "results": [],
         "excel_path": None,
-        "filtered_folder": None,
+        "zip_path": None,
         "error": None,
     }
 
@@ -99,7 +101,7 @@ async def refine_skills_endpoint(
 async def screen_resumes(
     background_tasks: BackgroundTasks,
     jd_file: UploadFile = File(...),
-    resume_folder: str = Form(...),
+    resume_files: List[UploadFile] = File(...),
     top_n: int = Form(...),
     primary_skills: str = Form(default="[]"),
     secondary_skills: str = Form(default="[]"),
@@ -107,16 +109,37 @@ async def screen_resumes(
 ):
     """
     Start a resume screening job.
-    primary_skills and secondary_skills are JSON-encoded lists approved by the user in step 2.
-    jd_text_override: if provided, use this JD text instead of re-parsing the file.
+    resume_files: uploaded PDF resumes (max 400).
+    primary_skills / secondary_skills: JSON-encoded lists approved in Step 2.
+    jd_text_override: pre-parsed JD text from Step 1 to avoid re-parsing.
     """
+    if len(resume_files) > 400:
+        raise HTTPException(status_code=400, detail="Maximum 400 resume files allowed per screening.")
+
     job_id = str(uuid.uuid4())
     jobs[job_id] = init_job()
 
-    file_bytes = await jd_file.read()
-    filename = jd_file.filename
+    # Save uploaded resumes to a per-job temp directory
+    temp_dir = os.path.join(tempfile.gettempdir(), f"recruitiq_{job_id}")
+    os.makedirs(temp_dir, exist_ok=True)
+
+    saved = 0
+    for rf in resume_files:
+        bare_name = os.path.basename(rf.filename or "")
+        ext = os.path.splitext(bare_name)[1].lower()
+        if bare_name and ext in (".pdf", ".docx", ".doc"):
+            content = await rf.read()
+            dest = os.path.join(temp_dir, bare_name)
+            with open(dest, "wb") as f:
+                f.write(content)
+            saved += 1
+
+    if saved == 0:
+        raise HTTPException(status_code=400, detail="No valid PDF resumes found in the uploaded files.")
 
     # Parse JD text
+    file_bytes = await jd_file.read()
+    filename = jd_file.filename
     if jd_text_override.strip():
         jd_text = jd_text_override.strip()
     else:
@@ -141,7 +164,7 @@ async def screen_resumes(
         job_id=job_id,
         jd_text=jd_text,
         jd_filename=filename,
-        resume_folder=resume_folder.strip(),
+        resume_folder=temp_dir,
         top_n=int(top_n),
         approved_primary=approved_primary,
         approved_secondary=approved_secondary,
@@ -201,6 +224,23 @@ async def download_excel(job_id: str):
         excel_path,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=os.path.basename(excel_path),
+    )
+
+
+@app.get("/api/download-zip/{job_id}")
+async def download_zip(job_id: str):
+    """Download a ZIP of the top N matched resumes."""
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    zip_path = jobs[job_id].get("zip_path")
+    if not zip_path or not os.path.exists(zip_path):
+        raise HTTPException(status_code=404, detail="ZIP not yet available")
+
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=os.path.basename(zip_path),
     )
 
 
@@ -298,20 +338,30 @@ async def run_screening(
             return
 
         # Step 5: Claude comprehensive extraction + scoring
-        job["phase"] = f"Phase 2: AI scoring top {len(top_resumes)} resumes..."
+        phase2_total = len(top_resumes)
+        job["phase"] = f"Phase 2: AI scoring top {phase2_total} resumes..."
+        job["progress"] = 0
+        job["total"] = phase2_total
+
+        def on_phase2_progress(done: int, total: int, filename: str):
+            job["progress"] = done
+            job["current_file"] = filename
+            job["phase"] = f"Phase 2: AI scoring ({done}/{total})"
+
         results = await claude_rerank(
             jd_text,
             top_resumes,
             top_n=top_n,
             jd_requirements=jd_requirements,
+            on_progress=on_phase2_progress,
         )
 
-        # Step 6: Copy filtered resumes
-        job["phase"] = "Saving top resumes..."
-        filtered_folder = copy_filtered_resumes(
-            resume_folder, [r["filename"] for r in results]
+        # Step 6: Create ZIP of top resumes
+        job["phase"] = "Creating resume ZIP..."
+        zip_path = create_filtered_zip(
+            resume_folder, [r["filename"] for r in results], jd_filename
         )
-        job["filtered_folder"] = filtered_folder
+        job["zip_path"] = zip_path
 
         # Step 7: Generate Excel
         job["phase"] = "Generating Excel report..."

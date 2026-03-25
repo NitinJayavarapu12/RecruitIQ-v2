@@ -1,24 +1,28 @@
 import os
-import shutil
+import zipfile
+import tempfile
+import datetime
 from typing import List
 
 
-def copy_filtered_resumes(resume_folder: str, filenames: List[str]) -> str:
+def create_filtered_zip(resume_folder: str, filenames: List[str], jd_filename: str = "") -> str:
     """
-    Copy matched resumes into a 'filtered' subfolder.
-    Creates the folder if it doesn't exist.
-    Returns the path to the filtered folder.
+    Create a ZIP archive of the top N matched resumes.
+    Returns path to the ZIP file saved in the system temp directory.
     """
-    filtered_folder = os.path.join(resume_folder, "filtered")
-    os.makedirs(filtered_folder, exist_ok=True)
+    date_tag = datetime.datetime.now().strftime("%Y-%m-%d_%H%M")
+    jd_base = os.path.splitext(jd_filename)[0] if jd_filename else "results"
+    safe_jd = "".join(c if c.isalnum() or c in "-_" else "_" for c in jd_base)
+    zip_filename = f"top_candidates_{safe_jd}_{date_tag}.zip"
+    zip_path = os.path.join(tempfile.gettempdir(), zip_filename)
 
-    copied = 0
-    for filename in filenames:
-        src = os.path.join(resume_folder, filename)
-        dst = os.path.join(filtered_folder, filename)
-        if os.path.isfile(src):
-            shutil.copy2(src, dst)
-            copied += 1
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        added = 0
+        for filename in filenames:
+            src = os.path.join(resume_folder, filename)
+            if os.path.isfile(src):
+                zf.write(src, filename)
+                added += 1
 
-    print(f"[FILE MANAGER] Copied {copied} resumes to: {filtered_folder}")
-    return filtered_folder
+    print(f"[ZIP] Created {added} resumes → {zip_path}")
+    return zip_path

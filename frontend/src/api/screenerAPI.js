@@ -1,6 +1,6 @@
 import axios from "axios";
 
-const BASE = "/api";
+const BASE = (import.meta.env.VITE_API_URL || "") + "/api";
 
 /**
  * Step 1 → Step 2: Analyze a JD file and extract structured requirements.
@@ -32,11 +32,12 @@ export async function refineSkills(jdText, feedback) {
 
 /**
  * Step 2 → Step 3: Start the screening job with user-approved skills.
+ * resumeFiles: array of File objects (PDF resumes, max 400)
  */
-export async function startScreening(jdFile, resumeFolder, topN, primarySkills = [], secondarySkills = [], jdText = "") {
+export async function startScreening(jdFile, resumeFiles, topN, primarySkills = [], secondarySkills = [], jdText = "") {
   const form = new FormData();
   form.append("jd_file", jdFile);
-  form.append("resume_folder", resumeFolder);
+  resumeFiles.forEach((f) => form.append("resume_files", f));
   form.append("top_n", topN);
   form.append("primary_skills", JSON.stringify(primarySkills));
   form.append("secondary_skills", JSON.stringify(secondarySkills));
@@ -77,5 +78,14 @@ export async function getResults(jobId) {
 export function downloadExcel(jobId) {
   const link = document.createElement("a");
   link.href = `${BASE}/download/${jobId}`;
+  link.click();
+}
+
+/**
+ * Download the ZIP of top N matched resumes for a completed job.
+ */
+export function downloadZip(jobId) {
+  const link = document.createElement("a");
+  link.href = `${BASE}/download-zip/${jobId}`;
   link.click();
 }

@@ -17,32 +17,30 @@ warnings.filterwarnings("ignore")
 
 _client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
+# ── In-memory LlamaParse cache (persists for server lifetime) ─────────────────
+# Key: MD5 hash of first 8KB of file content → Value: extracted text
+_llama_cache: Dict[str, str] = {}
+
+
 # ── LlamaParse text extraction ────────────────────────────────────────────────
 
 def parse_pdf_with_llama(file_path: str) -> Optional[str]:
-    """Use LlamaParse to extract clean structured text from a PDF, with MD5 caching."""
-    resume_folder = os.path.dirname(file_path)
+    """Use LlamaParse to extract clean structured text from a PDF.
+    Results are cached in memory by file content hash for the server lifetime.
+    """
     filename = os.path.basename(file_path)
-    cache_dir = os.path.join(resume_folder, ".llama_cache")
-    cache_file = os.path.join(cache_dir, filename + ".json")
 
-    # Compute MD5 of first 8KB to detect file changes
+    # Compute MD5 of first 8KB
     try:
         with open(file_path, "rb") as f:
             file_hash = hashlib.md5(f.read(8192)).hexdigest()
     except Exception:
         file_hash = None
 
-    # Check cache
-    if file_hash and os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached = json.load(f)
-            if cached.get("hash") == file_hash and cached.get("text"):
-                print(f"  [CACHE] {filename}")
-                return cached["text"]
-        except Exception:
-            pass
+    # Check in-memory cache
+    if file_hash and file_hash in _llama_cache:
+        print(f"  [CACHE] {filename}")
+        return _llama_cache[file_hash]
 
     # ── Call LlamaParse API ──────────────────────────────────────────────────
     try:
@@ -58,11 +56,8 @@ def parse_pdf_with_llama(file_path: str) -> Optional[str]:
             return None
         text = docs[0].text
 
-        # Save to cache
         if file_hash:
-            os.makedirs(cache_dir, exist_ok=True)
-            with open(cache_file, "w", encoding="utf-8") as f:
-                json.dump({"hash": file_hash, "text": text}, f, ensure_ascii=False)
+            _llama_cache[file_hash] = text
         print(f"  [LLAMA] {filename}")
         return text
     except Exception as e:
@@ -205,7 +200,7 @@ def extract_and_score_with_claude(text: str, jd_requirements: dict) -> dict:
         required_domain=jd_requirements.get("required_domain", "N/A"),
         primary_skills=primary_str or "N/A",
         secondary_skills=secondary_str or "N/A",
-        resume_text=text[:8000],
+        resume_text=text,
     )
 
     defaults = {
@@ -422,37 +417,50 @@ def deduplicate_results(results: List[Dict], top_n: int = 50) -> List[Dict]:
 
 # ── Main entry point ──────────────────────────────────────────────────────────
 
+CONCURRENCY_LIMIT = 5  # max simultaneous LlamaParse + Claude calls
+
+
+CONCURRENCY_LIMIT = 5  # max simultaneous LlamaParse + Claude calls
+
+
 async def claude_rerank(
     jd_text: str,
     resumes: List[Dict],
     top_n: int = 50,
     jd_requirements: dict = None,
+    on_progress=None,
 ) -> List[Dict]:
     """
     Process resumes using LlamaParse + comprehensive Claude scoring.
-    Deduplicates candidates and returns top N sorted by final_score.
+    Runs up to CONCURRENCY_LIMIT resumes in parallel to reduce wall-clock time.
+    on_progress(done, total, filename): optional callback called after each resume finishes.
     """
     if jd_requirements is None:
         jd_requirements = {}
 
     loop = asyncio.get_event_loop()
-    all_results = []
     total = len(resumes)
+    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+    done_count = 0
 
-    print(f"[LLAMAPARSE] Processing {total} resumes (~{total * 4 // 60} min estimated)...")
+    print(f"[LLAMAPARSE] Processing {total} resumes (concurrency={CONCURRENCY_LIMIT})...")
 
-    for i, resume in enumerate(resumes):
-        print(f"[LLAMAPARSE] {i + 1}/{total}: {resume['filename']}")
-        result = await loop.run_in_executor(
-            None, process_single_resume, resume, jd_text, jd_requirements
-        )
-        all_results.append(result)
+    async def process_with_semaphore(resume: Dict):
+        nonlocal done_count
+        async with semaphore:
+            result = await loop.run_in_executor(
+                None, process_single_resume, resume, jd_text, jd_requirements
+            )
+            done_count += 1
+            print(f"[LLAMAPARSE] {done_count}/{total}: {resume['filename']}")
+            if on_progress:
+                on_progress(done_count, total, resume["filename"])
+            return result
 
-        if i < total - 1:
-            await asyncio.sleep(1)
+    tasks = [process_with_semaphore(r) for r in resumes]
+    all_results = await asyncio.gather(*tasks)
 
-    final_results = deduplicate_results(all_results, top_n=top_n)
-
+    final_results = deduplicate_results(list(all_results), top_n=top_n)
     valid = [r for r in final_results if r.get("name") not in ("N/A", None, "")]
     print(f"[LLAMAPARSE] Done — {len(final_results)} unique candidates, {len(valid)} with names extracted")
     return final_results

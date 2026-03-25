@@ -2,9 +2,20 @@ import os
 import json
 import hashlib
 import pdfplumber
-import pytesseract
-from pdf2image import convert_from_path
 from typing import List, Dict, Optional
+
+try:
+    import pytesseract
+    from pdf2image import convert_from_path
+    _OCR_AVAILABLE = True
+except ImportError:
+    _OCR_AVAILABLE = False
+
+try:
+    from docx import Document as DocxDocument
+    _DOCX_AVAILABLE = True
+except ImportError:
+    _DOCX_AVAILABLE = False
 
 
 def _get_cache_path(folder_path: str, filename: str) -> str:
@@ -44,8 +55,19 @@ def _save_cache(cache_path: str, file_hash: str, text: str):
         print(f"[CACHE] Could not save cache: {e}")
 
 
+SUPPORTED_EXTS = (".pdf", ".docx", ".doc")
+
+
+def _parse_docx(file_path: str) -> str:
+    """Extract plain text from a DOCX file."""
+    if not _DOCX_AVAILABLE:
+        return ""
+    doc = DocxDocument(file_path)
+    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+
 def parse_single_resume(file_path: str, filename: str) -> Optional[dict]:
-    """Extract text from a single PDF with caching support."""
+    """Extract text from a PDF or DOCX resume with caching support."""
     folder_path = os.path.dirname(file_path)
     cache_path = _get_cache_path(folder_path, filename)
     file_hash = _get_file_hash(file_path)
@@ -54,40 +76,34 @@ def parse_single_resume(file_path: str, filename: str) -> Optional[dict]:
     cached_text = _load_cache(cache_path, file_hash)
     if cached_text:
         print(f"[CACHE] Using cached text for: {filename}")
-        return {
-            "filename": filename,
-            "path": file_path,
-            "text": cached_text,
-        }
+        return {"filename": filename, "path": file_path, "text": cached_text}
 
-    # Not in cache — extract text
     try:
         text = ""
+        ext = os.path.splitext(filename)[1].lower()
 
-        # Try fast text extraction first (text-based PDFs)
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
+        if ext in (".docx", ".doc"):
+            text = _parse_docx(file_path)
+        else:
+            # PDF: try fast text extraction first
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
 
-        # Fall back to OCR for image-based PDFs
-        if not text.strip():
-            print(f"[OCR] Processing: {filename}")
-            images = convert_from_path(file_path, dpi=150, first_page=1, last_page=3)
-            for image in images:
-                page_text = pytesseract.image_to_string(image, config='--psm 6')
-                if page_text:
-                    text += page_text + "\n"
+            # Fall back to OCR for image-based PDFs (only if available)
+            if not text.strip() and _OCR_AVAILABLE:
+                print(f"[OCR] Processing: {filename}")
+                images = convert_from_path(file_path, dpi=150, first_page=1, last_page=3)
+                for image in images:
+                    page_text = pytesseract.image_to_string(image, config='--psm 6')
+                    if page_text:
+                        text += page_text + "\n"
 
         if text.strip():
-            # Save to cache so next run is instant and consistent
             _save_cache(cache_path, file_hash, text.strip())
-            return {
-                "filename": filename,
-                "path": file_path,
-                "text": text.strip(),
-            }
+            return {"filename": filename, "path": file_path, "text": text.strip()}
 
         return None
 
@@ -97,7 +113,7 @@ def parse_single_resume(file_path: str, filename: str) -> Optional[dict]:
 
 
 def get_pdf_files(folder_path: str) -> List[str]:
-    """Return sorted list of PDF filenames in folder."""
+    """Return sorted list of PDF and DOCX resume filenames in folder."""
     if not os.path.exists(folder_path):
         raise FileNotFoundError(f"Resume folder not found: {folder_path}")
     if not os.path.isdir(folder_path):
@@ -105,6 +121,6 @@ def get_pdf_files(folder_path: str) -> List[str]:
 
     return sorted([
         f for f in os.listdir(folder_path)
-        if f.lower().endswith(".pdf") and
-        os.path.isfile(os.path.join(folder_path, f))
+        if os.path.splitext(f)[1].lower() in SUPPORTED_EXTS
+        and os.path.isfile(os.path.join(folder_path, f))
     ])
