@@ -1,5 +1,7 @@
 # RecruitIQ v2 — AI-Powered Resume Screening Agent
 
+**Live Demo:** https://recruitiq-v2-1.onrender.com
+
 RecruitIQ v2 is an advanced AI-powered resume screening tool that automatically analyzes job descriptions, extracts requirements, and ranks candidates using Claude AI. Built for recruiters and hiring managers who need to screen large volumes of resumes quickly and accurately.
 
 ---
