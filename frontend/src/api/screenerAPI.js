@@ -3,18 +3,46 @@ import axios from "axios";
 const BASE = "/api";
 
 /**
- * Start a screening job.
- * @param {File} jdFile - Uploaded JD file
- * @param {string} resumeFolder - Local folder path
- * @param {number} minScore - Minimum match threshold (0–100)
- * @returns {Promise<{job_id: string}>}
+ * Step 1 → Step 2: Analyze a JD file and extract structured requirements.
+ * Returns: { required_title, required_years, required_education, required_domain,
+ *            primary_skills, secondary_skills, jd_summary, jd_text }
  */
-export async function startScreening(jdFile, resumeFolder, topN) {
+export async function analyzeJD(file) {
+  const form = new FormData();
+  form.append("jd_file", file);
+  const res = await axios.post(`${BASE}/analyze-jd`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+}
+
+/**
+ * Step 2 refinement: Re-run Claude on the JD text with user feedback.
+ * Returns updated requirements with better primary/secondary skills.
+ */
+export async function refineSkills(jdText, feedback) {
+  const form = new FormData();
+  form.append("jd_text", jdText);
+  form.append("feedback", feedback || "find more specific technical skills");
+  const res = await axios.post(`${BASE}/refine-skills`, form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return res.data;
+}
+
+/**
+ * Step 2 → Step 3: Start the screening job with user-approved skills.
+ */
+export async function startScreening(jdFile, resumeFolder, topN, primarySkills = [], secondarySkills = [], jdText = "") {
   const form = new FormData();
   form.append("jd_file", jdFile);
   form.append("resume_folder", resumeFolder);
   form.append("top_n", topN);
-
+  form.append("primary_skills", JSON.stringify(primarySkills));
+  form.append("secondary_skills", JSON.stringify(secondarySkills));
+  if (jdText) {
+    form.append("jd_text_override", jdText);
+  }
   const res = await axios.post(`${BASE}/screen`, form, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -23,9 +51,7 @@ export async function startScreening(jdFile, resumeFolder, topN) {
 
 /**
  * Subscribe to live progress via SSE.
- * @param {string} jobId
- * @param {function} onUpdate - Callback with parsed event data
- * @returns {EventSource}
+ * Returns an EventSource — caller must close it when done.
  */
 export function subscribeToProgress(jobId, onUpdate) {
   const es = new EventSource(`${BASE}/progress/${jobId}`);
@@ -38,8 +64,15 @@ export function subscribeToProgress(jobId, onUpdate) {
 }
 
 /**
+ * Fetch final results for a completed job.
+ */
+export async function getResults(jobId) {
+  const res = await axios.get(`${BASE}/results/${jobId}`);
+  return res.data;
+}
+
+/**
  * Download the Excel report for a completed job.
- * @param {string} jobId
  */
 export function downloadExcel(jobId) {
   const link = document.createElement("a");
