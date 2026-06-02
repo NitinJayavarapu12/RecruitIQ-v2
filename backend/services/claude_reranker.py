@@ -57,6 +57,8 @@ def parse_pdf_with_llama(file_path: str) -> Optional[str]:
         text = docs[0].text
 
         if file_hash:
+            if len(_llama_cache) > 500:
+                _llama_cache.clear()
             _llama_cache[file_hash] = text
         print(f"  [LLAMA] {filename}")
         return text

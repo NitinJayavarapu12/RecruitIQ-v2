@@ -323,7 +323,7 @@ async def run_screening(
                 resume["keyword_score"] = keyword_match(jd_text, resume["text"])
             return resume
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_file = {
                 executor.submit(
                     parse_and_score,
