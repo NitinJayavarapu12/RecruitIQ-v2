@@ -4,6 +4,7 @@ import os
 import re
 import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List
 
 from dotenv import load_dotenv
@@ -173,6 +174,11 @@ async def screen_resumes(
     return {"job_id": job_id}
 
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.get("/api/progress/{job_id}")
 async def stream_progress(job_id: str):
     """Server-Sent Events stream for live progress updates."""
@@ -306,25 +312,38 @@ async def run_screening(
             job["error"] = "No PDF resumes found in the specified folder."
             return
 
-        # Step 3: Parse + keyword match each resume
+        # Step 3: Parse + keyword match each resume (parallel)
         job["phase"] = "Phase 1: Reading and scoring resumes..."
         scored = []
-        loop = asyncio.get_event_loop()
+        completed = 0
 
-        for i, filename in enumerate(pdf_files):
-            job["progress"] = i + 1
-            job["current_file"] = filename
-
-            file_path = os.path.join(resume_folder, filename)
-            resume = await loop.run_in_executor(
-                None, parse_single_resume, file_path, filename
-            )
-
+        def parse_and_score(file_path: str, filename: str):
+            resume = parse_single_resume(file_path, filename)
             if resume:
                 resume["keyword_score"] = keyword_match(jd_text, resume["text"])
-                scored.append(resume)
+            return resume
 
-            await asyncio.sleep(0)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_file = {
+                executor.submit(
+                    parse_and_score,
+                    os.path.join(resume_folder, filename),
+                    filename
+                ): filename
+                for filename in pdf_files
+            }
+            for future in as_completed(future_to_file):
+                completed += 1
+                filename = future_to_file[future]
+                job["progress"] = completed
+                job["current_file"] = filename
+                try:
+                    resume = future.result()
+                    if resume:
+                        scored.append(resume)
+                except Exception:
+                    pass
+                await asyncio.sleep(0)
 
         # Step 4: Deduplicate by filename, sort, pick top buffer
         scored.sort(key=lambda x: x["keyword_score"], reverse=True)
